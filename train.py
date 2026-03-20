@@ -9,7 +9,10 @@ Usage:
 
 import argparse
 import json
+import os
+import sys
 import time
+from collections import deque
 from pathlib import Path
 
 import mlx.core as mx
@@ -20,6 +23,30 @@ import numpy as np
 from env import NumsEnv, NUM_ACTIONS, OBS_SIZE
 from model import NumsPolicy, sample_action, compute_log_probs, compute_entropy
 from simulator import play_baseline_game
+
+
+# ──────────────────────────────────────────────────────────────
+# ANSI helpers
+# ──────────────────────────────────────────────────────────────
+
+BOLD    = "\033[1m"
+DIM     = "\033[2m"
+RESET   = "\033[0m"
+RED     = "\033[31m"
+GREEN   = "\033[32m"
+YELLOW  = "\033[33m"
+BLUE    = "\033[34m"
+CYAN    = "\033[36m"
+MAGENTA = "\033[35m"
+UP      = "\033[A"
+CLEAR   = "\033[2K"
+
+
+def _term_width():
+    try:
+        return os.get_terminal_size().columns
+    except Exception:
+        return 80
 
 
 # ──────────────────────────────────────────────────────────────
@@ -44,6 +71,229 @@ DEFAULTS = dict(
     eval_games=1000,         # games per evaluation
     save_dir="checkpoints",
 )
+
+
+# ──────────────────────────────────────────────────────────────
+# Live dashboard
+# ──────────────────────────────────────────────────────────────
+
+class Dashboard:
+    """Live-updating terminal dashboard for training progress."""
+
+    HEADER_LINES = 5   # static header
+    METRIC_LINES = 12  # live metrics area
+    TOTAL_LINES = HEADER_LINES + METRIC_LINES
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.t_start = time.time()
+        self.last_render = 0
+        self.rendered_once = False
+
+        # Tracking
+        self.total_steps = 0
+        self.episodes = 0
+        self.best_avg = 0.0
+        self.best_eval = 0.0
+        self.baseline_avg = None
+
+        # Rolling windows
+        self.recent_levels = deque(maxlen=100)
+        self.recent_losses = deque(maxlen=20)
+        self.recent_pg_losses = deque(maxlen=20)
+        self.recent_vf_losses = deque(maxlen=20)
+        self.recent_entropy = deque(maxlen=20)
+        self.level_history = []   # (steps, avg_level) for sparkline
+        self.sps_samples = deque(maxlen=10)
+
+        # Current update stats
+        self.cur_loss = 0.0
+        self.cur_pg_loss = 0.0
+        self.cur_vf_loss = 0.0
+        self.cur_entropy = 0.0
+        self.cur_sps = 0
+        self.phase = "rollout"  # rollout | update | eval
+        self.eval_nn = None
+        self.eval_bl = None
+
+    def _elapsed(self):
+        return time.time() - self.t_start
+
+    def _eta(self):
+        elapsed = self._elapsed()
+        if self.total_steps == 0:
+            return "..."
+        rate = self.total_steps / elapsed
+        remaining = self.cfg["total_steps"] - self.total_steps
+        secs = remaining / rate if rate > 0 else 0
+        return _fmt_duration(secs)
+
+    def _avg_level(self):
+        if not self.recent_levels:
+            return 0.0
+        return sum(self.recent_levels) / len(self.recent_levels)
+
+    def _sparkline(self, values, width=20):
+        if len(values) < 2:
+            return DIM + "..." + RESET
+        # Take last `width` values
+        vals = list(values)[-width:]
+        mn, mx = min(vals), max(vals)
+        rng = mx - mn if mx != mn else 1.0
+        blocks = " ▁▂▃▄▅▆▇█"
+        line = ""
+        for v in vals:
+            idx = int((v - mn) / rng * (len(blocks) - 1))
+            line += blocks[idx]
+        return line
+
+    def _progress_bar(self, width=30):
+        pct = min(self.total_steps / self.cfg["total_steps"], 1.0)
+        filled = int(pct * width)
+        bar = "█" * filled + "░" * (width - filled)
+        return bar, pct
+
+    def render(self, force=False):
+        """Render the dashboard. Throttled to ~4 fps unless forced."""
+        now = time.time()
+        if not force and (now - self.last_render) < 0.25:
+            return
+        self.last_render = now
+
+        # Move cursor up to overwrite previous render
+        if self.rendered_once:
+            sys.stdout.write(f"\033[{self.TOTAL_LINES}A")
+        self.rendered_once = True
+
+        w = _term_width()
+        lines = []
+
+        # ── Progress bar ──
+        bar, pct = self._progress_bar(w - 30)
+        elapsed_str = _fmt_duration(self._elapsed())
+        eta_str = self._eta()
+        lines.append(
+            f"  {bar} {BOLD}{pct*100:5.1f}%{RESET}  "
+            f"{DIM}{elapsed_str} elapsed{RESET}"
+        )
+        lines.append(
+            f"  {DIM}{self.total_steps:>10,} / {self.cfg['total_steps']:,} steps    "
+            f"ETA: {RESET}{BOLD}{eta_str}{RESET}    "
+            f"{DIM}({self.phase}){RESET}"
+        )
+        lines.append(f"  {DIM}{'─' * (w - 4)}{RESET}")
+
+        # ── Metrics (2 columns) ──
+        avg_lv = self._avg_level()
+        sps = self.cur_sps
+
+        # Level color
+        if avg_lv >= 10:
+            lv_color = GREEN
+        elif avg_lv >= 7:
+            lv_color = YELLOW
+        else:
+            lv_color = RED
+
+        lines.append(
+            f"  {BOLD}Avg Level (100):{RESET} {lv_color}{BOLD}{avg_lv:6.2f}{RESET}"
+            f"  {DIM}│{RESET}  "
+            f"{BOLD}Episodes:{RESET} {self.episodes:,}"
+        )
+
+        # Loss
+        loss_str = f"{self.cur_loss:.4f}" if self.cur_loss else "..."
+        lines.append(
+            f"  {BOLD}Total Loss:{RESET}     {CYAN}{loss_str:>7}{RESET}"
+            f"  {DIM}│{RESET}  "
+            f"{BOLD}Steps/sec:{RESET} {sps:,}"
+        )
+
+        # Sub-losses
+        pg_str = f"{self.cur_pg_loss:.4f}" if self.cur_pg_loss else "..."
+        vf_str = f"{self.cur_vf_loss:.4f}" if self.cur_vf_loss else "..."
+        ent_str = f"{self.cur_entropy:.4f}" if self.cur_entropy else "..."
+        lines.append(
+            f"  {DIM}  Policy:{RESET}  {pg_str:>7}"
+            f"  {DIM}│{RESET}  "
+            f"{DIM}  Value:{RESET}  {vf_str:>7}"
+            f"  {DIM}│{RESET}  "
+            f"{DIM}  Entropy:{RESET} {ent_str:>7}"
+        )
+
+        lines.append(f"  {DIM}{'─' * (w - 4)}{RESET}")
+
+        # ── Level sparkline ──
+        spark_width = min(40, w - 20)
+        spark = self._sparkline([v for _, v in self.level_history], spark_width)
+        lines.append(f"  {BOLD}Level trend:{RESET} {spark}")
+
+        # ── Best / eval ──
+        best_str = f"{self.best_avg:.2f}" if self.best_avg > 0 else "..."
+        lines.append(
+            f"  {BOLD}Best avg:{RESET} {GREEN}{best_str}{RESET}"
+            f"  {DIM}│{RESET}  "
+            f"{BOLD}Best eval:{RESET} {GREEN}{self.best_eval:.2f}{RESET}" if self.best_eval > 0 else
+            f"  {BOLD}Best avg:{RESET} {GREEN}{best_str}{RESET}"
+            f"  {DIM}│{RESET}  "
+            f"{BOLD}Best eval:{RESET} {DIM}...{RESET}"
+        )
+
+        # ── Eval results ──
+        if self.eval_nn is not None and self.eval_bl is not None:
+            delta = self.eval_nn - self.eval_bl
+            delta_color = GREEN if delta > 0 else (RED if delta < 0 else YELLOW)
+            lines.append(
+                f"  {BOLD}Last eval:{RESET} NN={CYAN}{self.eval_nn:.2f}{RESET}  "
+                f"Baseline={DIM}{self.eval_bl:.2f}{RESET}  "
+                f"Delta={delta_color}{BOLD}{delta:+.2f}{RESET}"
+            )
+        else:
+            lines.append(f"  {BOLD}Last eval:{RESET} {DIM}pending...{RESET}")
+
+        lines.append(f"  {DIM}{'─' * (w - 4)}{RESET}")
+
+        # ── Config reminder ──
+        lines.append(
+            f"  {DIM}envs={self.cfg['n_envs']}  "
+            f"rollout={self.cfg['rollout_steps']}  "
+            f"batch={self.cfg['batch_size']}  "
+            f"lr={self.cfg['lr']}  "
+            f"hidden={self.cfg['hidden_size']}{RESET}"
+        )
+
+        # Pad to fixed height
+        while len(lines) < self.TOTAL_LINES:
+            lines.append("")
+
+        output = "\n".join(CLEAR + line for line in lines[:self.TOTAL_LINES])
+        sys.stdout.write(output + "\n")
+        sys.stdout.flush()
+
+    def print_header(self):
+        """Print the static header once at start."""
+        w = _term_width()
+        print()
+        print(f"  {BOLD}NUMS AI — PPO Training{RESET}")
+        print(f"  {DIM}{'─' * (w - 4)}{RESET}")
+        print()
+        # Reserve space for dashboard
+        print("\n" * self.TOTAL_LINES)
+
+
+def _fmt_duration(secs):
+    """Format seconds as human-readable duration."""
+    if secs < 0:
+        return "..."
+    secs = int(secs)
+    if secs < 60:
+        return f"{secs}s"
+    elif secs < 3600:
+        return f"{secs // 60}m {secs % 60}s"
+    else:
+        h = secs // 3600
+        m = (secs % 3600) // 60
+        return f"{h}h {m}m"
 
 
 # ──────────────────────────────────────────────────────────────
@@ -181,21 +431,18 @@ def train(cfg: dict):
     vec_env = VecEnv(cfg["n_envs"])
     obs, masks = vec_env.reset()
 
+    # Dashboard
+    dash = Dashboard(cfg)
+    dash.print_header()
+
     # Tracking
-    total_steps = 0
-    episode_levels = []
-    best_avg = 0.0
     log_data = []
-
-    print(f"Training NUMS NN with PPO ({cfg['total_steps']:,} steps)")
-    print(f"  Envs: {cfg['n_envs']} | Rollout: {cfg['rollout_steps']} | Batch: {cfg['batch_size']}")
-    print(f"  LR: {cfg['lr']} | Hidden: {cfg['hidden_size']} | Clip: {cfg['clip_eps']}")
-    print()
-
     t_start = time.time()
+    steps_per_rollout = cfg["rollout_steps"] * cfg["n_envs"]
 
-    while total_steps < cfg["total_steps"]:
+    while dash.total_steps < cfg["total_steps"]:
         # ── Collect rollout ──
+        dash.phase = "rollout"
         buffer = RolloutBuffer(cfg["rollout_steps"], cfg["n_envs"])
 
         for step in range(cfg["rollout_steps"]):
@@ -223,15 +470,26 @@ def train(cfg: dict):
             # Track completed episodes
             for i in range(cfg["n_envs"]):
                 if dones[i]:
-                    episode_levels.append(levels[i])
+                    dash.episodes += 1
+                    dash.recent_levels.append(levels[i])
 
             buffer.add(obs, actions, log_probs_np, rewards, dones, values_np, masks)
             obs = next_obs
             masks = next_masks
 
-        total_steps += cfg["rollout_steps"] * cfg["n_envs"]
+            # Update dashboard during rollout (every 128 steps)
+            if step % 128 == 0:
+                dash.total_steps = (dash.total_steps // steps_per_rollout) * steps_per_rollout + step * cfg["n_envs"]
+                elapsed = time.time() - t_start
+                dash.cur_sps = int(dash.total_steps / elapsed) if elapsed > 0 else 0
+                dash.render()
+
+        dash.total_steps += steps_per_rollout
 
         # ── Compute advantages ──
+        dash.phase = "update"
+        dash.render(force=True)
+
         with mx.no_grad():
             _, last_values = model(mx.array(obs), mx.array(masks))
             mx.eval(last_values)
@@ -245,9 +503,10 @@ def train(cfg: dict):
         advantages = (advantages - adv_mean) / adv_std
 
         # ── PPO update ──
-        total_pg_loss = 0
-        total_vf_loss = 0
-        total_entropy = 0
+        total_loss = 0.0
+        total_pg = 0.0
+        total_vf = 0.0
+        total_ent = 0.0
         n_updates = 0
 
         loss_and_grad_fn = nn.value_and_grad(model, _ppo_loss)
@@ -256,7 +515,7 @@ def train(cfg: dict):
             for batch in buffer.get_batches(advantages, returns, cfg["batch_size"]):
                 b_obs, b_actions, b_old_log_probs, b_advantages, b_returns, b_masks = batch
 
-                loss, grads = loss_and_grad_fn(
+                (loss, (pg_l, vf_l, ent_l)), grads = loss_and_grad_fn(
                     model, b_obs, b_actions, b_old_log_probs,
                     b_advantages, b_returns, b_masks,
                     cfg["clip_eps"], cfg["vf_coef"], cfg["ent_coef"],
@@ -270,55 +529,81 @@ def train(cfg: dict):
                 mx.eval(model.parameters(), optimizer.state)
 
                 n_updates += 1
-                total_pg_loss += loss.item()
+                total_loss += loss.item()
+                total_pg += pg_l.item()
+                total_vf += vf_l.item()
+                total_ent += ent_l.item()
 
-        # ── Logging ──
-        avg_loss = total_pg_loss / max(n_updates, 1)
-        recent_levels = episode_levels[-100:] if episode_levels else [0]
-        avg_level = sum(recent_levels) / len(recent_levels)
+        # Update dashboard metrics
+        if n_updates > 0:
+            dash.cur_loss = total_loss / n_updates
+            dash.cur_pg_loss = total_pg / n_updates
+            dash.cur_vf_loss = total_vf / n_updates
+            dash.cur_entropy = total_ent / n_updates
+            dash.recent_losses.append(dash.cur_loss)
+            dash.recent_pg_losses.append(dash.cur_pg_loss)
+            dash.recent_vf_losses.append(dash.cur_vf_loss)
+            dash.recent_entropy.append(dash.cur_entropy)
+
         elapsed = time.time() - t_start
-        sps = total_steps / elapsed
+        dash.cur_sps = int(dash.total_steps / elapsed) if elapsed > 0 else 0
 
-        entry = {
-            "steps": total_steps,
-            "avg_level_100": round(avg_level, 2),
-            "episodes": len(episode_levels),
-            "loss": round(avg_loss, 4),
-            "sps": int(sps),
-        }
-        log_data.append(entry)
-        print(
-            f"Steps: {total_steps:>8,} | "
-            f"Avg Level (100): {avg_level:5.2f} | "
-            f"Episodes: {len(episode_levels):>6,} | "
-            f"Loss: {avg_loss:7.4f} | "
-            f"SPS: {sps:,.0f}"
-        )
+        avg_lv = dash._avg_level()
+        if avg_lv > dash.best_avg:
+            dash.best_avg = avg_lv
+        dash.level_history.append((dash.total_steps, avg_lv))
+
+        # Log data
+        log_data.append({
+            "steps": dash.total_steps,
+            "avg_level_100": round(avg_lv, 2),
+            "episodes": dash.episodes,
+            "loss": round(dash.cur_loss, 4),
+            "pg_loss": round(dash.cur_pg_loss, 4),
+            "vf_loss": round(dash.cur_vf_loss, 4),
+            "entropy": round(dash.cur_entropy, 4),
+            "sps": dash.cur_sps,
+        })
+
+        dash.render(force=True)
 
         # ── Periodic evaluation ──
-        if total_steps % cfg["eval_interval"] < cfg["rollout_steps"] * cfg["n_envs"]:
+        if dash.total_steps % cfg["eval_interval"] < steps_per_rollout:
+            dash.phase = "eval"
+            dash.render(force=True)
+
             eval_avg = evaluate_model(model, cfg["eval_games"])
             baseline_avg = evaluate_baseline(cfg["eval_games"])
-            improvement = eval_avg - baseline_avg
-            print(f"  ► Eval ({cfg['eval_games']} games): NN={eval_avg:.2f} | Baseline={baseline_avg:.2f} | Δ={improvement:+.2f}")
 
-            if eval_avg > best_avg:
-                best_avg = eval_avg
+            dash.eval_nn = eval_avg
+            dash.eval_bl = baseline_avg
+
+            if eval_avg > dash.best_eval:
+                dash.best_eval = eval_avg
                 save_model(model, save_dir / "best_model.npz")
-                print(f"  ► New best model saved ({best_avg:.2f})")
+
+            dash.render(force=True)
 
     # Save final model
     save_model(model, save_dir / "final_model.npz")
     with open(save_dir / "training_log.json", "w") as f:
         json.dump(log_data, f, indent=2)
 
-    print(f"\nTraining complete! {len(episode_levels):,} episodes in {time.time() - t_start:.0f}s")
-    print(f"Best average level: {best_avg:.2f}")
+    # Final summary (below the dashboard)
+    dash.phase = "done"
+    dash.render(force=True)
+    print()
+    print(f"  {GREEN}{BOLD}Training complete!{RESET}")
+    print(f"  {dash.episodes:,} episodes in {_fmt_duration(time.time() - t_start)}")
+    print(f"  Best eval avg: {dash.best_eval:.2f}")
+    print(f"  Model saved to {save_dir}/")
+    print()
+
     return model
 
 
 # ──────────────────────────────────────────────────────────────
-# PPO Loss
+# PPO Loss (returns sub-losses for dashboard)
 # ──────────────────────────────────────────────────────────────
 
 def _ppo_loss(
@@ -341,16 +626,16 @@ def _ppo_loss(
     # Entropy bonus
     entropy = compute_entropy(logits).mean()
 
-    return pg_loss + vf_coef * vf_loss - ent_coef * entropy
+    total = pg_loss + vf_coef * vf_loss - ent_coef * entropy
+    return total, (pg_loss, vf_loss, entropy)
 
 
 # ──────────────────────────────────────────────────────────────
 # Utilities
 # ──────────────────────────────────────────────────────────────
 
-def _sample_action_np(logits: np.ndarray) -> tuple[int, float]:
+def _sample_action_np(logits: np.ndarray):
     """Sample action from numpy logits (handles -inf masking)."""
-    # Compute stable log-softmax
     valid = logits > -1e30
     if not valid.any():
         return 0, 0.0
@@ -377,7 +662,7 @@ def _clip_grad_norm(grads, max_norm):
     return mx.utils.tree_unflatten(list(zip([k for k, _ in mx.utils.tree_flatten(grads)], flat)))
 
 
-def evaluate_model(model: NumsPolicy, n_games: int = 1000) -> float:
+def evaluate_model(model, n_games: int = 1000) -> float:
     """Play n_games using the NN model and return average level."""
     levels = []
     env = NumsEnv()
@@ -391,7 +676,6 @@ def evaluate_model(model: NumsPolicy, n_games: int = 1000) -> float:
             logits, _ = model(obs_mx, mask_mx)
             mx.eval(logits)
 
-            # Greedy action (argmax)
             logits_np = np.array(logits[0])
             valid = logits_np > -1e30
             if not valid.any():
@@ -411,12 +695,12 @@ def evaluate_baseline(n_games: int = 1000) -> float:
     return sum(levels) / len(levels)
 
 
-def save_model(model: NumsPolicy, path: Path):
+def save_model(model, path: Path):
     """Save model weights."""
     model.save_weights(str(path))
 
 
-def load_model(path: Path, hidden: int = 256) -> NumsPolicy:
+def load_model(path: Path, hidden: int = 256):
     """Load model weights."""
     model = NumsPolicy(hidden=hidden)
     model.load_weights(str(path))
