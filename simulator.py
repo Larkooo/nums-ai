@@ -202,7 +202,7 @@ class NumsGame:
     def get_observation(self) -> list[float]:
         """Return observation vector.
 
-        Layout (57 features):
+        Layout (83 features):
           [0:18]  - 18 slots normalized to [0, 1] (0 = empty)
           [18]    - current number / 999
           [19]    - next number / 999
@@ -213,8 +213,18 @@ class NumsGame:
           [53:60] - enabled power 0 one-hot (7 types, zeros if not enabled)
           [60:67] - enabled power 1 one-hot
           [67:74] - enabled power 2 one-hot
+          --- derived features ---
+          [74]    - valid slots for current number / 18
+          [75]    - valid slots for next number / 18
+          [76]    - min gap between adjacent filled numbers / 999 (board tightness)
+          [77]    - fraction of board filled
+          [78]    - number of enabled powers / 3
+          [79]    - ideal slot position for current number / 17 (proportional)
+          [80]    - is current number stuck? (0 or 1)
+          [81]    - empty slots below current number / 18
+          [82]    - empty slots above current number / 18
         """
-        obs = [0.0] * 74
+        obs = [0.0] * 83
 
         # Slots (normalized)
         for i in range(SLOT_COUNT):
@@ -241,7 +251,69 @@ class NumsGame:
                 if 1 <= p <= POWER_COUNT:
                     obs[53 + i * POWER_COUNT + (p - 1)] = 1.0
 
+        # Derived features
+        valid_cur = self._valid_slots_for(self.number)
+        valid_next = self._valid_slots_for(self.next_number)
+        obs[74] = len(valid_cur) / SLOT_COUNT
+        obs[75] = len(valid_next) / SLOT_COUNT
+
+        # Min gap between adjacent filled numbers
+        filled = [s for s in self.slots if s != 0]
+        filled.sort()
+        if len(filled) >= 2:
+            min_gap = min(filled[i+1] - filled[i] for i in range(len(filled) - 1))
+            obs[76] = min_gap / SLOT_MAX
+        else:
+            obs[76] = 1.0  # no gap constraint yet
+
+        # Fraction filled
+        obs[77] = len(filled) / SLOT_COUNT
+
+        # Number of enabled powers
+        obs[78] = len(self.enabled_powers) / 3.0
+
+        # Ideal proportional position for current number
+        obs[79] = (self.number - SLOT_MIN) / (SLOT_MAX - SLOT_MIN)
+
+        # Is stuck?
+        obs[80] = 0.0 if valid_cur else 1.0
+
+        # Empty slots in valid range below/above current number
+        empty_below = sum(1 for i in range(SLOT_COUNT) if self.slots[i] == 0 and i in valid_cur and self.number > 0)
+        empty_above = sum(1 for i in range(SLOT_COUNT) if self.slots[i] == 0 and i in valid_cur)
+        # More useful: slots below vs above the ideal position
+        ideal_pos = (self.number - SLOT_MIN) / (SLOT_MAX - SLOT_MIN) * (SLOT_COUNT - 1)
+        below = sum(1 for s in valid_cur if s < ideal_pos)
+        above = sum(1 for s in valid_cur if s >= ideal_pos)
+        obs[81] = below / max(SLOT_COUNT, 1)
+        obs[82] = above / max(SLOT_COUNT, 1)
+
         return obs
+
+    def board_quality(self) -> float:
+        """Compute a 0-1 score of how good the current board state is.
+
+        Higher = more future flexibility. Used for reward shaping.
+        """
+        valid_cur = len(self._valid_slots_for(self.number))
+        valid_next = len(self._valid_slots_for(self.next_number))
+        empty = sum(1 for s in self.slots if s == 0)
+
+        if empty == 0:
+            return 1.0  # board is full, game won
+
+        # How many slots can current/next number use (relative to empty slots)
+        flexibility = (valid_cur + valid_next) / (2 * max(empty, 1))
+
+        # Min gap between adjacent filled numbers (tightness penalty)
+        filled = sorted(s for s in self.slots if s != 0)
+        if len(filled) >= 2:
+            min_gap = min(filled[i+1] - filled[i] for i in range(len(filled) - 1))
+            gap_score = min(min_gap / 50.0, 1.0)  # 50+ gap is healthy
+        else:
+            gap_score = 1.0
+
+        return 0.6 * flexibility + 0.4 * gap_score
 
     # ------------------------------------------------------------------
     # Internal: number generation

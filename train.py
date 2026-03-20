@@ -70,6 +70,9 @@ DEFAULTS = dict(
     eval_interval=100_000,   # evaluate every 100k steps
     eval_games=2000,         # more eval games for accurate comparison
     save_dir="checkpoints",
+    shaping_start=0.4,       # initial reward shaping weight
+    shaping_end=0.05,        # final reward shaping weight (near-zero but not gone)
+    shaping_anneal_frac=0.7, # anneal over first 70% of training
 )
 
 
@@ -365,6 +368,18 @@ def train(cfg: dict):
     rollout_num = 0
 
     while rollout_num * steps_per_rollout < cfg["total_steps"]:
+        # ── Anneal reward shaping ──
+        progress = min(rollout_num * steps_per_rollout / cfg["total_steps"], 1.0)
+        anneal_frac = cfg.get("shaping_anneal_frac", 0.7)
+        shaping_start = cfg.get("shaping_start", 0.4)
+        shaping_end = cfg.get("shaping_end", 0.05)
+        if progress < anneal_frac:
+            shaping_w = shaping_start + (shaping_end - shaping_start) * (progress / anneal_frac)
+        else:
+            shaping_w = shaping_end
+        for env in vec_env.envs:
+            env.set_shaping_weight(shaping_w)
+
         # ── Collect rollout ──
         dash.phase = "rollout"
         buffer = RolloutBuffer(cfg["rollout_steps"], cfg["n_envs"])
