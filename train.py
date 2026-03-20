@@ -70,8 +70,8 @@ DEFAULTS = dict(
     eval_interval=100_000,   # evaluate every 100k steps
     eval_games=2000,         # more eval games for accurate comparison
     save_dir="checkpoints",
-    shaping_start=0.4,       # initial reward shaping weight
-    shaping_end=0.05,        # final reward shaping weight (near-zero but not gone)
+    shaping_start=0.0,       # reward shaping disabled by default (richer obs only)
+    shaping_end=0.0,         # set shaping_start=0.4 to enable with annealing
     shaping_anneal_frac=0.7, # anneal over first 70% of training
 )
 
