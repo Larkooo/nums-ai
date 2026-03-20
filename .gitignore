@@ -1,9 +1,8 @@
 __pycache__/
 *.pyc
 *.pyo
-checkpoints/
-*.npz
 .env
 .venv/
 venv/
 .DS_Store
+checkpoints/

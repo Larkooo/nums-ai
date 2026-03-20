@@ -1,49 +1,92 @@
-# nums-ai
+# NUMS AI
 
 Neural network that learns to play [NUMS](https://nums.gg) — a fully on-chain number-placement strategy game on Starknet.
 
-## Game
+Trained with Proximal Policy Optimization (PPO) on Apple MLX. Reaches **10.13 avg level** vs 9.05 baseline (+1.08 improvement).
 
-NUMS is a push-your-luck game where you place randomly drawn numbers (1-999) into 18 ascending-order slots. The game features hidden traps (Bomb, Lucky, Magnet, UFO, Windy) and selectable powers (Reroll, High, Low, Swap, DoubleUp, Halve, Mirror) drawn at levels 4, 8, and 12.
+## Results
 
-## Architecture
+| Agent | Avg Level | vs Baseline |
+|-------|-----------|-------------|
+| Baseline (proportional mapping) | 9.05 | — |
+| **NUMS AI (PPO, 5M steps)** | **10.13** | **+1.08** |
 
-- **Simulator** (`simulator.py`): Faithful Python port of the Cairo on-chain game logic including all trap chain reactions and power mechanics
-- **Environment** (`env.py`): Gymnasium-compatible environment with action masking (23 discrete actions: 18 slot placements + 2 power selections + 3 power applications)
-- **Model** (`model.py`): Actor-Critic MLP with shared feature extraction, built on Apple MLX
-- **Training** (`train.py`): PPO with GAE, action masking, gradient clipping
-- **Evaluation** (`evaluate.py`): Side-by-side comparison with the baseline proportional-mapping bot
+Pre-trained models are available in `models/`.
 
-## Setup
+## The Game
 
-```bash
-pip install -r requirements.txt
+NUMS is a push-your-luck game: place randomly drawn numbers (1-999) into 18 ascending-order slots. Features:
+- **5 hidden traps** (Bomb, Lucky, Magnet, UFO, Windy) that fire on placement and chain-react
+- **7 powers** (Reroll, High, Low, Swap, DoubleUp, Halve, Mirror) drawn at levels 4, 8, 12
+- **Win condition**: fill all 18 slots in ascending order
+
+## Project Structure
+
 ```
+src/
+├── simulator.py    # Faithful port of the Cairo on-chain game logic
+├── env.py          # Gymnasium environment with action masking
+├── model.py        # Actor-Critic MLP on Apple MLX
+├── train.py        # PPO training with live dashboard
+├── evaluate.py     # NN vs baseline comparison
+└── demo.py         # TUI demo — watch the AI play
+models/
+└── model_eval_10.13.npz   # Best pre-trained model
+```
+
+## Quick Start
 
 Requires Python 3.10+ and Apple Silicon (for MLX).
 
-## Usage
-
 ```bash
-# Benchmark the baseline bot (no ML dependencies needed)
-python simulator.py
-
-# Train the neural network
-python train.py --steps 1000000
-
-# Evaluate NN vs baseline
-python evaluate.py --games 5000
-
-# Evaluate a saved model
-python train.py --eval-only
+pip install mlx numpy gymnasium
 ```
 
-## How it works
+### Train
 
-The NN observes: 18 normalized slot values, current/next number, level, available powers, and enabled powers (29 features total). It outputs action probabilities over 23 possible actions, masked to only valid moves.
+```bash
+cd src
+python train.py --steps 5000000
+```
 
-PPO training runs thousands of simulated games in parallel, giving +1 reward per successful placement. The network learns slot placement strategy, power selection timing, and power application decisions simultaneously.
+### Resume from checkpoint
 
-## Baseline comparison
+```bash
+python train.py --steps 10000000 --resume ../models/model_eval_10.13.npz
+```
 
-The baseline bot uses proportional mapping (place number at its proportional position across slots) with a next-number tiebreaker — matching the strategy from the [nums-bot](https://github.com/Larkooo/nums-bot) Rust implementation.
+### Evaluate
+
+```bash
+python evaluate.py --games 5000
+```
+
+### Watch the AI play
+
+```bash
+# With trained model
+python demo.py --model ../models/model_eval_10.13.npz --speed 1.0
+
+# Compare NN vs baseline on the same game
+python demo.py --model ../models/model_eval_10.13.npz --side-by-side
+
+# Baseline only (no MLX needed)
+python demo.py
+```
+
+## Architecture
+
+**Observation** (83 features): 18 slot values, current/next number, level, 18 occupancy flags, one-hot power encodings, plus 9 derived features (valid slot counts for current and next number, min gap, board fill ratio, ideal position, stuck flag).
+
+**Actions** (23 discrete, masked): 18 slot placements + 2 power selections + 3 power applications. Invalid actions are masked out so the NN only chooses from legal moves.
+
+**Training**: PPO with GAE, action masking, gradient clipping. 16 parallel environments, 512 batch size, 6 PPO epochs per rollout. Live terminal dashboard shows progress, loss breakdown, entropy, and periodic eval vs baseline.
+
+## How It Learns
+
+1. Plays thousands of games in parallel, exploring random strategies
+2. Gets +1 reward per level reached
+3. PPO computes advantages ("was this action better or worse than expected?") using a critic network
+4. Updates policy to favor actions that led to higher-than-expected outcomes
+5. Entropy bonus keeps it exploring instead of committing too early
+6. Gradually discovers strategies like: good spacing, next-number lookahead, strategic power usage
