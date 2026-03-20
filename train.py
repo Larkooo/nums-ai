@@ -80,9 +80,7 @@ DEFAULTS = dict(
 class Dashboard:
     """Live-updating terminal dashboard for training progress."""
 
-    HEADER_LINES = 5   # static header
-    METRIC_LINES = 12  # live metrics area
-    TOTAL_LINES = HEADER_LINES + METRIC_LINES
+    TOTAL_LINES = 10  # fixed dashboard height
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -165,102 +163,31 @@ class Dashboard:
             sys.stdout.write(f"\033[{self.TOTAL_LINES}A")
         self.rendered_once = True
 
-        w = _term_width()
         lines = []
-
-        # ── Progress bar ──
-        bar, pct = self._progress_bar(w - 30)
+        bar, pct = self._progress_bar(40)
         elapsed_str = _fmt_duration(self._elapsed())
         eta_str = self._eta()
-        lines.append(
-            f"  {bar} {BOLD}{pct*100:5.1f}%{RESET}  "
-            f"{DIM}{elapsed_str} elapsed{RESET}"
-        )
-        lines.append(
-            f"  {DIM}{self.total_steps:>10,} / {self.cfg['total_steps']:,} steps    "
-            f"ETA: {RESET}{BOLD}{eta_str}{RESET}    "
-            f"{DIM}({self.phase}){RESET}"
-        )
-        lines.append(f"  {DIM}{'─' * (w - 4)}{RESET}")
-
-        # ── Metrics (2 columns) ──
         avg_lv = self._avg_level()
-        sps = self.cur_sps
-
-        # Level color
-        if avg_lv >= 10:
-            lv_color = GREEN
-        elif avg_lv >= 7:
-            lv_color = YELLOW
-        else:
-            lv_color = RED
-
-        lines.append(
-            f"  {BOLD}Avg Level (100):{RESET} {lv_color}{BOLD}{avg_lv:6.2f}{RESET}"
-            f"  {DIM}│{RESET}  "
-            f"{BOLD}Episodes:{RESET} {self.episodes:,}"
-        )
-
-        # Loss
-        loss_str = f"{self.cur_loss:.4f}" if self.cur_loss else "..."
-        lines.append(
-            f"  {BOLD}Total Loss:{RESET}     {CYAN}{loss_str:>7}{RESET}"
-            f"  {DIM}│{RESET}  "
-            f"{BOLD}Steps/sec:{RESET} {sps:,}"
-        )
-
-        # Sub-losses
+        lv_color = GREEN if avg_lv >= 10 else (YELLOW if avg_lv >= 7 else RED)
+        loss_str = f"{self.cur_loss:.4f}" if self.cur_loss else "  ..."
         pg_str = f"{self.cur_pg_loss:.4f}" if self.cur_pg_loss else "..."
         vf_str = f"{self.cur_vf_loss:.4f}" if self.cur_vf_loss else "..."
         ent_str = f"{self.cur_entropy:.4f}" if self.cur_entropy else "..."
-        lines.append(
-            f"  {DIM}  Policy:{RESET}  {pg_str:>7}"
-            f"  {DIM}│{RESET}  "
-            f"{DIM}  Value:{RESET}  {vf_str:>7}"
-            f"  {DIM}│{RESET}  "
-            f"{DIM}  Entropy:{RESET} {ent_str:>7}"
-        )
-
-        lines.append(f"  {DIM}{'─' * (w - 4)}{RESET}")
-
-        # ── Level sparkline ──
-        spark_width = min(40, w - 20)
-        spark = self._sparkline([v for _, v in self.level_history], spark_width)
-        lines.append(f"  {BOLD}Level trend:{RESET} {spark}")
-
-        # ── Best / eval ──
+        spark = self._sparkline([v for _, v in self.level_history], 30)
         best_str = f"{self.best_avg:.2f}" if self.best_avg > 0 else "..."
-        lines.append(
-            f"  {BOLD}Best avg:{RESET} {GREEN}{best_str}{RESET}"
-            f"  {DIM}│{RESET}  "
-            f"{BOLD}Best eval:{RESET} {GREEN}{self.best_eval:.2f}{RESET}" if self.best_eval > 0 else
-            f"  {BOLD}Best avg:{RESET} {GREEN}{best_str}{RESET}"
-            f"  {DIM}│{RESET}  "
-            f"{BOLD}Best eval:{RESET} {DIM}...{RESET}"
-        )
+        eval_best = f"{GREEN}{self.best_eval:.2f}{RESET}" if self.best_eval > 0 else f"{DIM}...{RESET}"
 
-        # ── Eval results ──
+        lines.append(f"{bar} {BOLD}{pct*100:5.1f}%{RESET} {DIM}{elapsed_str} elapsed, ETA {RESET}{BOLD}{eta_str}{RESET} {DIM}({self.phase}){RESET}")
+        lines.append(f"{DIM}{self.total_steps:,}/{self.cfg['total_steps']:,} steps{RESET} {DIM}│{RESET} {self.cur_sps:,} sps {DIM}│{RESET} {self.episodes:,} episodes")
+        lines.append(f"level {lv_color}{BOLD}{avg_lv:.2f}{RESET} {DIM}(best {best_str}){RESET} {DIM}│{RESET} loss {CYAN}{loss_str}{RESET} {DIM}[pg {pg_str} vf {vf_str} ent {ent_str}]{RESET}")
+        lines.append(f"trend {spark}")
+
         if self.eval_nn is not None and self.eval_bl is not None:
             delta = self.eval_nn - self.eval_bl
-            delta_color = GREEN if delta > 0 else (RED if delta < 0 else YELLOW)
-            lines.append(
-                f"  {BOLD}Last eval:{RESET} NN={CYAN}{self.eval_nn:.2f}{RESET}  "
-                f"Baseline={DIM}{self.eval_bl:.2f}{RESET}  "
-                f"Delta={delta_color}{BOLD}{delta:+.2f}{RESET}"
-            )
+            dc = GREEN if delta > 0 else (RED if delta < 0 else YELLOW)
+            lines.append(f"eval  NN={CYAN}{self.eval_nn:.2f}{RESET} baseline={DIM}{self.eval_bl:.2f}{RESET} {dc}{BOLD}{delta:+.2f}{RESET} {DIM}│{RESET} best eval {eval_best}")
         else:
-            lines.append(f"  {BOLD}Last eval:{RESET} {DIM}pending...{RESET}")
-
-        lines.append(f"  {DIM}{'─' * (w - 4)}{RESET}")
-
-        # ── Config reminder ──
-        lines.append(
-            f"  {DIM}envs={self.cfg['n_envs']}  "
-            f"rollout={self.cfg['rollout_steps']}  "
-            f"batch={self.cfg['batch_size']}  "
-            f"lr={self.cfg['lr']}  "
-            f"hidden={self.cfg['hidden_size']}{RESET}"
-        )
+            lines.append(f"eval  {DIM}pending...{RESET} {DIM}│{RESET} best eval {eval_best}")
 
         # Pad to fixed height
         while len(lines) < self.TOTAL_LINES:
@@ -272,11 +199,8 @@ class Dashboard:
 
     def print_header(self):
         """Print the static header once at start."""
-        w = _term_width()
-        print()
-        print(f"  {BOLD}NUMS AI — PPO Training{RESET}")
-        print(f"  {DIM}{'─' * (w - 4)}{RESET}")
-        print()
+        cfg = self.cfg
+        print(f"{BOLD}NUMS AI{RESET} {DIM}— PPO on Apple MLX | envs={cfg['n_envs']} rollout={cfg['rollout_steps']} batch={cfg['batch_size']} lr={cfg['lr']} hidden={cfg['hidden_size']}{RESET}")
         # Reserve space for dashboard
         print("\n" * self.TOTAL_LINES)
 
