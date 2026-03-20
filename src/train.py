@@ -69,7 +69,7 @@ DEFAULTS = dict(
     n_envs=16,               # more parallel games for diverse experience
     eval_interval=100_000,   # evaluate every 100k steps
     eval_games=2000,         # more eval games for accurate comparison
-    save_dir="../models",
+    save_dir="models",
     shaping_start=0.0,       # reward shaping disabled by default (richer obs only)
     shaping_end=0.0,         # set shaping_start=0.4 to enable with annealing
     shaping_anneal_frac=0.7, # anneal over first 70% of training
