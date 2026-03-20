@@ -70,6 +70,9 @@ DEFAULTS = dict(
     eval_interval=100_000,   # evaluate every 100k steps
     eval_games=2000,         # more eval games for accurate comparison
     save_dir="checkpoints",
+    shaping_start=0.0,       # reward shaping disabled by default (richer obs only)
+    shaping_end=0.0,         # set shaping_start=0.4 to enable with annealing
+    shaping_anneal_frac=0.7, # anneal over first 70% of training
 )
 
 
@@ -347,6 +350,21 @@ def train(cfg: dict):
     # Create model and optimizer
     model = NumsPolicy(hidden=cfg["hidden_size"])
     mx.eval(model.parameters())
+
+    # Resume from checkpoint if requested
+    resume_path = cfg.get("resume")
+    if resume_path:
+        p = Path(resume_path)
+        if not p.exists():
+            # Try finding it in save_dir
+            p = save_dir / resume_path
+        if p.exists():
+            model.load_weights(str(p))
+            mx.eval(model.parameters())
+            print(f"  Resumed from {p.name}")
+        else:
+            print(f"  Warning: {resume_path} not found, starting fresh")
+
     optimizer = optim.Adam(learning_rate=cfg["lr"])
 
     # Create environments
@@ -357,6 +375,18 @@ def train(cfg: dict):
     dash = Dashboard(cfg)
     dash.print_header()
 
+    # Find previous best eval score from existing checkpoint filenames
+    # Format: model_eval_{score}.npz (e.g., model_eval_10.03.npz)
+    prev_best = 0.0
+    for f in save_dir.glob("model_eval_*.npz"):
+        try:
+            score = float(f.stem.replace("model_eval_", ""))
+            prev_best = max(prev_best, score)
+        except ValueError:
+            pass
+    if prev_best > 0:
+        print(f"  {DIM}Previous best: {prev_best:.2f}{RESET}")
+
     # Tracking
     log_data = []
     t_start = time.time()
@@ -365,6 +395,18 @@ def train(cfg: dict):
     rollout_num = 0
 
     while rollout_num * steps_per_rollout < cfg["total_steps"]:
+        # ── Anneal reward shaping ──
+        progress = min(rollout_num * steps_per_rollout / cfg["total_steps"], 1.0)
+        anneal_frac = cfg.get("shaping_anneal_frac", 0.7)
+        shaping_start = cfg.get("shaping_start", 0.4)
+        shaping_end = cfg.get("shaping_end", 0.05)
+        if progress < anneal_frac:
+            shaping_w = shaping_start + (shaping_end - shaping_start) * (progress / anneal_frac)
+        else:
+            shaping_w = shaping_end
+        for env in vec_env.envs:
+            env.set_shaping_weight(shaping_w)
+
         # ── Collect rollout ──
         dash.phase = "rollout"
         buffer = RolloutBuffer(cfg["rollout_steps"], cfg["n_envs"])
@@ -526,7 +568,9 @@ def train(cfg: dict):
 
             if eval_avg > dash.best_eval:
                 dash.best_eval = eval_avg
-                save_model(model, save_dir / "best_model.npz")
+                if eval_avg > prev_best:
+                    save_model(model, save_dir / f"model_eval_{eval_avg:.2f}.npz")
+                    prev_best = eval_avg
 
             dash.render(force=True)
 
@@ -672,19 +716,32 @@ def main():
     parser.add_argument("--n-envs", type=int, default=DEFAULTS["n_envs"])
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--rollout-steps", type=int, default=DEFAULTS["rollout_steps"])
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Resume training from a checkpoint (path or filename in save-dir)")
     parser.add_argument("--eval-only", action="store_true")
     parser.add_argument("--eval-games", type=int, default=DEFAULTS["eval_games"])
     parser.add_argument("--save-dir", type=str, default=DEFAULTS["save_dir"])
     args = parser.parse_args()
 
     if args.eval_only:
-        path = Path(args.save_dir) / "best_model.npz"
-        if not path.exists():
-            path = Path(args.save_dir) / "final_model.npz"
+        # Find the highest-scored model
+        save_dir = Path(args.save_dir)
+        best_path = None
+        best_score = 0.0
+        for f in save_dir.glob("model_eval_*.npz"):
+            try:
+                score = float(f.stem.replace("model_eval_", ""))
+                if score > best_score:
+                    best_score = score
+                    best_path = f
+            except ValueError:
+                pass
+        path = best_path or save_dir / "final_model.npz"
         if not path.exists():
             print(f"No model found in {args.save_dir}/")
             return
 
+        print(f"Loading {path.name}" + (f" (score: {best_score:.2f})" if best_score > 0 else ""))
         model = load_model(path, hidden=args.hidden)
         nn_avg = evaluate_model(model, args.eval_games)
         bl_avg = evaluate_baseline(args.eval_games)
@@ -703,6 +760,7 @@ def main():
         rollout_steps=args.rollout_steps,
         eval_games=args.eval_games,
         save_dir=args.save_dir,
+        resume=args.resume,
     )
 
     train(cfg)
