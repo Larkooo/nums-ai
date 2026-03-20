@@ -200,10 +200,9 @@ class Dashboard:
     def print_header(self):
         """Print the static header once at start."""
         cfg = self.cfg
-        print(f"{BOLD}NUMS AI{RESET} {DIM}— PPO on Apple MLX | envs={cfg['n_envs']} rollout={cfg['rollout_steps']} batch={cfg['batch_size']} lr={cfg['lr']} hidden={cfg['hidden_size']}{RESET}")
-        # Reserve exact space for dashboard lines
+        print(f"{BOLD}nums neural network training{RESET} {DIM}— Proximal Policy Optimization on Apple MLX | envs={cfg['n_envs']} batch={cfg['batch_size']} lr={cfg['lr']} hidden={cfg['hidden_size']}{RESET}")
         for _ in range(self.TOTAL_LINES):
-            print()
+            sys.stdout.write("\n")
 
 
 def _fmt_duration(secs):
