@@ -365,10 +365,13 @@ def train(cfg: dict):
     t_start = time.time()
     steps_per_rollout = cfg["rollout_steps"] * cfg["n_envs"]
 
-    while dash.total_steps < cfg["total_steps"]:
+    rollout_num = 0
+
+    while rollout_num * steps_per_rollout < cfg["total_steps"]:
         # ── Collect rollout ──
         dash.phase = "rollout"
         buffer = RolloutBuffer(cfg["rollout_steps"], cfg["n_envs"])
+        rollout_base = rollout_num * steps_per_rollout
 
         for step in range(cfg["rollout_steps"]):
             obs_mx = mx.array(obs)
@@ -404,12 +407,13 @@ def train(cfg: dict):
 
             # Update dashboard during rollout (every 128 steps)
             if step % 128 == 0:
-                dash.total_steps = (dash.total_steps // steps_per_rollout) * steps_per_rollout + step * cfg["n_envs"]
+                dash.total_steps = rollout_base + step * cfg["n_envs"]
                 elapsed = time.time() - t_start
                 dash.cur_sps = int(dash.total_steps / elapsed) if elapsed > 0 else 0
                 dash.render()
 
-        dash.total_steps += steps_per_rollout
+        rollout_num += 1
+        dash.total_steps = rollout_num * steps_per_rollout
 
         # ── Compute advantages ──
         dash.phase = "update"
