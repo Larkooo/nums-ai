@@ -40,7 +40,7 @@ class NumsPolicy(nn.Module):
             nn.Linear(hidden // 2, 1),
         )
 
-    def __call__(self, obs: mx.array, action_mask: mx.array | None = None):
+    def __call__(self, obs, action_mask=None):
         """Forward pass.
 
         Args:
