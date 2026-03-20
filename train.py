@@ -360,6 +360,18 @@ def train(cfg: dict):
     dash = Dashboard(cfg)
     dash.print_header()
 
+    # Find previous best eval score from existing checkpoint filenames
+    # Format: model_eval_{score}.npz (e.g., model_eval_10.03.npz)
+    prev_best = 0.0
+    for f in save_dir.glob("model_eval_*.npz"):
+        try:
+            score = float(f.stem.replace("model_eval_", ""))
+            prev_best = max(prev_best, score)
+        except ValueError:
+            pass
+    if prev_best > 0:
+        print(f"  {DIM}Previous best: {prev_best:.2f}{RESET}")
+
     # Tracking
     log_data = []
     t_start = time.time()
@@ -541,7 +553,9 @@ def train(cfg: dict):
 
             if eval_avg > dash.best_eval:
                 dash.best_eval = eval_avg
-                save_model(model, save_dir / "best_model.npz")
+                if eval_avg > prev_best:
+                    save_model(model, save_dir / f"model_eval_{eval_avg:.2f}.npz")
+                    prev_best = eval_avg
 
             dash.render(force=True)
 
@@ -693,13 +707,24 @@ def main():
     args = parser.parse_args()
 
     if args.eval_only:
-        path = Path(args.save_dir) / "best_model.npz"
-        if not path.exists():
-            path = Path(args.save_dir) / "final_model.npz"
+        # Find the highest-scored model
+        save_dir = Path(args.save_dir)
+        best_path = None
+        best_score = 0.0
+        for f in save_dir.glob("model_eval_*.npz"):
+            try:
+                score = float(f.stem.replace("model_eval_", ""))
+                if score > best_score:
+                    best_score = score
+                    best_path = f
+            except ValueError:
+                pass
+        path = best_path or save_dir / "final_model.npz"
         if not path.exists():
             print(f"No model found in {args.save_dir}/")
             return
 
+        print(f"Loading {path.name}" + (f" (score: {best_score:.2f})" if best_score > 0 else ""))
         model = load_model(path, hidden=args.hidden)
         nn_avg = evaluate_model(model, args.eval_games)
         bl_avg = evaluate_baseline(args.eval_games)
