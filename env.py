@@ -10,7 +10,7 @@ from simulator import NumsGame, SLOT_COUNT, SLOT_MAX, POWER_COUNT
 
 
 NUM_ACTIONS = 23  # 18 slots + 2 select + 3 apply
-OBS_SIZE = 29
+OBS_SIZE = 74     # 18 slots + 3 state + 18 occupancy + 2*7 selectable + 3*7 enabled
 
 
 class NumsEnv(gym.Env):

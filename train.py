@@ -54,21 +54,21 @@ def _term_width():
 # ──────────────────────────────────────────────────────────────
 
 DEFAULTS = dict(
-    total_steps=1_000_000,
-    rollout_steps=2048,      # steps per rollout before update
-    n_epochs=4,              # PPO epochs per update
-    batch_size=256,          # minibatch size
-    gamma=0.99,              # discount factor
+    total_steps=5_000_000,
+    rollout_steps=4096,      # longer rollouts = more data per update
+    n_epochs=6,              # more passes over each batch
+    batch_size=512,          # larger batches for stable gradients
+    gamma=0.997,             # higher discount — every level matters equally
     gae_lambda=0.95,         # GAE lambda
-    clip_eps=0.2,            # PPO clip epsilon
-    vf_coef=0.5,             # value loss coefficient
-    ent_coef=0.01,           # entropy bonus coefficient
-    lr=3e-4,                 # learning rate
+    clip_eps=0.15,           # tighter clipping = more conservative updates
+    vf_coef=0.25,            # lower vf coef — value loss was dominating
+    ent_coef=0.05,           # 5x more entropy bonus — explore longer
+    lr=1e-4,                 # slower learning rate for stability
     max_grad_norm=0.5,       # gradient clipping
-    hidden_size=256,         # network hidden size
-    n_envs=8,                # parallel environments
-    eval_interval=50_000,    # evaluate every N steps
-    eval_games=1000,         # games per evaluation
+    hidden_size=512,         # bigger network
+    n_envs=16,               # more parallel games for diverse experience
+    eval_interval=100_000,   # evaluate every 100k steps
+    eval_games=2000,         # more eval games for accurate comparison
     save_dir="checkpoints",
 )
 

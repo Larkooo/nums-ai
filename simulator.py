@@ -200,8 +200,21 @@ class NumsGame:
         return mask
 
     def get_observation(self) -> list[float]:
-        """Return 29-element observation vector."""
-        obs = [0.0] * 29
+        """Return observation vector.
+
+        Layout (57 features):
+          [0:18]  - 18 slots normalized to [0, 1] (0 = empty)
+          [18]    - current number / 999
+          [19]    - next number / 999
+          [20]    - level / 18
+          [21:39] - 18 binary flags: is slot occupied?
+          [39:46] - selectable power 0 one-hot (7 types)
+          [46:53] - selectable power 1 one-hot (7 types)
+          [53:60] - enabled power 0 one-hot (7 types, zeros if not enabled)
+          [60:67] - enabled power 1 one-hot
+          [67:74] - enabled power 2 one-hot
+        """
+        obs = [0.0] * 74
 
         # Slots (normalized)
         for i in range(SLOT_COUNT):
@@ -212,14 +225,21 @@ class NumsGame:
         obs[19] = self.next_number / SLOT_MAX
         obs[20] = self.level / SLOT_COUNT
 
-        # Selectable powers (2 slots)
-        for i, p in enumerate(self.selectable_powers[:2]):
-            obs[21 + i] = p / POWER_COUNT
+        # Slot occupancy flags
+        for i in range(SLOT_COUNT):
+            obs[21 + i] = 1.0 if self.slots[i] != 0 else 0.0
 
-        # Selected powers + enabled flags (3 slots of 2 values each)
+        # Selectable powers (one-hot per slot)
+        for i, p in enumerate(self.selectable_powers[:2]):
+            if 1 <= p <= POWER_COUNT:
+                obs[39 + i * POWER_COUNT + (p - 1)] = 1.0
+
+        # Enabled powers (one-hot per slot, only if enabled)
         for i in range(min(3, len(self.selected_powers))):
-            obs[23 + i * 2] = self.selected_powers[i] / POWER_COUNT
-            obs[24 + i * 2] = 1.0 if i in self.enabled_powers else 0.0
+            if i in self.enabled_powers:
+                p = self.selected_powers[i]
+                if 1 <= p <= POWER_COUNT:
+                    obs[53 + i * POWER_COUNT + (p - 1)] = 1.0
 
         return obs
 
