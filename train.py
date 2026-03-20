@@ -161,7 +161,6 @@ class Dashboard:
         # Move cursor up to overwrite previous render
         if self.rendered_once:
             sys.stdout.write(f"\033[{self.TOTAL_LINES}A")
-        self.rendered_once = True
 
         lines = []
         bar, pct = self._progress_bar(40)
@@ -196,13 +195,12 @@ class Dashboard:
         output = "\n".join(CLEAR + line for line in lines[:self.TOTAL_LINES])
         sys.stdout.write(output + "\n")
         sys.stdout.flush()
+        self.rendered_once = True
 
     def print_header(self):
         """Print the static header once at start."""
         cfg = self.cfg
         print(f"{BOLD}NUMS Neural Network Training{RESET} {DIM}— Proximal Policy Optimization on Apple MLX | envs={cfg['n_envs']} batch={cfg['batch_size']} lr={cfg['lr']} hidden={cfg['hidden_size']}{RESET}")
-        for _ in range(self.TOTAL_LINES):
-            sys.stdout.write("\n")
 
 
 def _fmt_duration(secs):
@@ -588,13 +586,14 @@ def _sample_action_np(logits: np.ndarray):
 
 def _clip_grad_norm(grads, max_norm):
     """Clip gradient norm (tree of arrays)."""
-    flat, treedef = mx.utils.tree_flatten(grads)
-    total_norm_sq = sum(mx.sum(g * g).item() for g in flat if g is not None)
+    from mlx.utils import tree_flatten, tree_unflatten
+    flat = tree_flatten(grads)
+    total_norm_sq = sum(mx.sum(g * g).item() for _, g in flat if g is not None)
     total_norm = total_norm_sq ** 0.5
     if total_norm > max_norm:
         scale = max_norm / (total_norm + 1e-6)
-        flat = [g * scale if g is not None else g for g in flat]
-    return mx.utils.tree_unflatten(list(zip([k for k, _ in mx.utils.tree_flatten(grads)], flat)))
+        flat = [(k, g * scale) if g is not None else (k, g) for k, g in flat]
+    return tree_unflatten(flat)
 
 
 def evaluate_model(model, n_games: int = 1000) -> float:
