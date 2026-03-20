@@ -21,7 +21,7 @@ import mlx.optimizers as optim
 import numpy as np
 
 from env import NumsEnv, NUM_ACTIONS, OBS_SIZE
-from model import NumsPolicy, sample_action, compute_log_probs, compute_entropy
+from model import NumsPolicy, compute_log_probs, compute_entropy
 from simulator import play_baseline_game
 
 
