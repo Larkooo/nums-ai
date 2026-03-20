@@ -430,24 +430,24 @@ class NumsGame:
         if power_type == PowerType.REROLL:
             self.number = self._draw_unique([])
         elif power_type == PowerType.HIGH:
-            # Draw a number higher than current
+            # Draw a number higher than current, fall back to full reroll
             used = set(s for s in self.slots if s != 0)
             used.add(self.number)
-            lo = self.number
-            while True:
-                n = self.rng.randint(lo, SLOT_MAX)
-                if n not in used:
-                    self.number = n
-                    break
+            candidates = [n for n in range(self.number, SLOT_MAX + 1) if n not in used]
+            if candidates:
+                self.number = self.rng.choice(candidates)
+            else:
+                self.number = self._draw_unique([])
         elif power_type == PowerType.LOW:
-            # Draw a number lower than current
+            # Draw a number lower than current, fall back to full reroll
             used = set(s for s in self.slots if s != 0)
             used.add(self.number)
-            while True:
-                n = self.rng.randint(SLOT_MIN, self.number)
-                if n not in used:
-                    self.number = n
-                    break
+            candidates = [n for n in range(SLOT_MIN, self.number + 1) if n not in used]
+            if candidates:
+                self.number = self.rng.choice(candidates)
+            else:
+                self.number = self._draw_unique([])
+
         elif power_type == PowerType.SWAP:
             self.number, self.next_number = self.next_number, self.number
         elif power_type == PowerType.DOUBLE_UP:
