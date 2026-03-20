@@ -80,7 +80,7 @@ DEFAULTS = dict(
 class Dashboard:
     """Live-updating terminal dashboard for training progress."""
 
-    TOTAL_LINES = 10  # fixed dashboard height
+    TOTAL_LINES = 5  # fixed dashboard height
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -201,8 +201,9 @@ class Dashboard:
         """Print the static header once at start."""
         cfg = self.cfg
         print(f"{BOLD}NUMS AI{RESET} {DIM}— PPO on Apple MLX | envs={cfg['n_envs']} rollout={cfg['rollout_steps']} batch={cfg['batch_size']} lr={cfg['lr']} hidden={cfg['hidden_size']}{RESET}")
-        # Reserve space for dashboard
-        print("\n" * self.TOTAL_LINES)
+        # Reserve exact space for dashboard lines
+        for _ in range(self.TOTAL_LINES):
+            print()
 
 
 def _fmt_duration(secs):
