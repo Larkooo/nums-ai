@@ -200,7 +200,7 @@ class Dashboard:
     def print_header(self):
         """Print the static header once at start."""
         cfg = self.cfg
-        print(f"{BOLD}nums neural network training{RESET} {DIM}— Proximal Policy Optimization on Apple MLX | envs={cfg['n_envs']} batch={cfg['batch_size']} lr={cfg['lr']} hidden={cfg['hidden_size']}{RESET}")
+        print(f"{BOLD}NUMS Neural Network Training{RESET} {DIM}— Proximal Policy Optimization on Apple MLX | envs={cfg['n_envs']} batch={cfg['batch_size']} lr={cfg['lr']} hidden={cfg['hidden_size']}{RESET}")
         for _ in range(self.TOTAL_LINES):
             sys.stdout.write("\n")
 
