@@ -371,11 +371,19 @@ def train(cfg: dict):
         rollout_base = rollout_num * steps_per_rollout
 
         for step in range(cfg["rollout_steps"]):
+            # Show compiling status on very first step
+            if rollout_num == 0 and step == 0:
+                dash.phase = "compiling MLX..."
+                dash.render(force=True)
+
             obs_mx = mx.array(obs)
             masks_mx = mx.array(masks)
 
             logits, values = model(obs_mx, masks_mx)
             mx.eval(logits, values)
+
+            if rollout_num == 0 and step == 0:
+                dash.phase = "rollout"
 
             # Sample actions for each env
             actions = np.zeros(cfg["n_envs"], dtype=np.int32)
@@ -402,8 +410,8 @@ def train(cfg: dict):
             obs = next_obs
             masks = next_masks
 
-            # Update dashboard during rollout (every 128 steps)
-            if step % 128 == 0:
+            # Update dashboard during rollout
+            if step % 64 == 0:
                 dash.total_steps = rollout_base + step * cfg["n_envs"]
                 elapsed = time.time() - t_start
                 dash.cur_sps = int(dash.total_steps / elapsed) if elapsed > 0 else 0
