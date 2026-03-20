@@ -419,9 +419,8 @@ def train(cfg: dict):
         dash.phase = "update"
         dash.render(force=True)
 
-        with mx.no_grad():
-            _, last_values = model(mx.array(obs), mx.array(masks))
-            mx.eval(last_values)
+        _, last_values = model(mx.array(obs), mx.array(masks))
+        mx.eval(last_values)
         last_values_np = np.array(last_values).squeeze(-1)
 
         advantages, returns = buffer.compute_gae(last_values_np, cfg["gamma"], cfg["gae_lambda"])
