@@ -350,6 +350,21 @@ def train(cfg: dict):
     # Create model and optimizer
     model = NumsPolicy(hidden=cfg["hidden_size"])
     mx.eval(model.parameters())
+
+    # Resume from checkpoint if requested
+    resume_path = cfg.get("resume")
+    if resume_path:
+        p = Path(resume_path)
+        if not p.exists():
+            # Try finding it in save_dir
+            p = save_dir / resume_path
+        if p.exists():
+            model.load_weights(str(p))
+            mx.eval(model.parameters())
+            print(f"  Resumed from {p.name}")
+        else:
+            print(f"  Warning: {resume_path} not found, starting fresh")
+
     optimizer = optim.Adam(learning_rate=cfg["lr"])
 
     # Create environments
@@ -701,6 +716,8 @@ def main():
     parser.add_argument("--n-envs", type=int, default=DEFAULTS["n_envs"])
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--rollout-steps", type=int, default=DEFAULTS["rollout_steps"])
+    parser.add_argument("--resume", type=str, default=None,
+                        help="Resume training from a checkpoint (path or filename in save-dir)")
     parser.add_argument("--eval-only", action="store_true")
     parser.add_argument("--eval-games", type=int, default=DEFAULTS["eval_games"])
     parser.add_argument("--save-dir", type=str, default=DEFAULTS["save_dir"])
@@ -743,6 +760,7 @@ def main():
         rollout_steps=args.rollout_steps,
         eval_games=args.eval_games,
         save_dir=args.save_dir,
+        resume=args.resume,
     )
 
     train(cfg)
