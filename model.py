@@ -11,6 +11,9 @@ import numpy as np
 
 from env import OBS_SIZE, NUM_ACTIONS
 
+# Use large negative instead of -inf to avoid NaN in logsumexp/entropy
+MASK_VALUE = -1e9
+
 
 class NumsPolicy(nn.Module):
     """Actor-Critic network for NUMS with action masking."""
@@ -41,75 +44,33 @@ class NumsPolicy(nn.Module):
         )
 
     def __call__(self, obs, action_mask=None):
-        """Forward pass.
-
-        Args:
-            obs: (batch, obs_size) observation tensor
-            action_mask: (batch, n_actions) boolean mask (True = valid)
-
-        Returns:
-            logits: (batch, n_actions) masked logits for policy
-            value: (batch, 1) state value estimate
-        """
         features = self.shared(obs)
         logits = self.policy(features)
         value = self.value(features)
 
-        # Apply action mask: set invalid actions to -inf
         if action_mask is not None:
-            # Where mask is False (invalid), set logits to -inf
-            logits = mx.where(action_mask, logits, mx.array(float("-inf")))
+            logits = mx.where(action_mask, logits, mx.array(MASK_VALUE))
 
         return logits, value
 
 
-def sample_action(logits: mx.array) -> tuple[int, float]:
-    """Sample an action from logits using Gumbel-max trick.
-
-    Returns (action_index, log_probability).
-    """
-    # Compute log probabilities
-    log_probs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-
-    # Gumbel-max sampling
-    gumbel_noise = -mx.log(-mx.log(mx.random.uniform(shape=logits.shape) + 1e-20) + 1e-20)
-    action = mx.argmax(logits + gumbel_noise, axis=-1)
-
-    action_idx = action.item()
-    log_prob = log_probs[action_idx].item()
-
-    return action_idx, log_prob
-
-
 def compute_log_probs(logits: mx.array, actions: mx.array) -> mx.array:
-    """Compute log probabilities of taken actions.
-
-    Args:
-        logits: (batch, n_actions)
-        actions: (batch,) integer action indices
-
-    Returns:
-        log_probs: (batch,) log probability of each action
-    """
+    """Compute log probabilities of taken actions."""
     log_probs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
-    # Gather log probs for taken actions
+    # Clamp to avoid extreme values
+    log_probs = mx.clip(log_probs, -20.0, 0.0)
     batch_size = actions.shape[0]
     indices = mx.arange(batch_size)
     return log_probs[indices, actions.astype(mx.int32)]
 
 
 def compute_entropy(logits: mx.array) -> mx.array:
-    """Compute entropy of the policy distribution.
-
-    Args:
-        logits: (batch, n_actions) - may contain -inf for masked actions
-
-    Returns:
-        entropy: (batch,) entropy per sample
-    """
+    """Compute entropy of the policy distribution (numerically stable)."""
     log_probs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
     probs = mx.exp(log_probs)
-    # Mask out -inf entries (they contribute 0 to entropy)
-    valid = logits > float("-inf")
-    entropy = -mx.sum(mx.where(valid, probs * log_probs, mx.zeros_like(probs)), axis=-1)
+    # Only count valid actions (not masked out)
+    valid = logits > MASK_VALUE + 1
+    safe_log = mx.where(valid, log_probs, mx.zeros_like(log_probs))
+    safe_prob = mx.where(valid, probs, mx.zeros_like(probs))
+    entropy = -mx.sum(safe_prob * safe_log, axis=-1)
     return entropy

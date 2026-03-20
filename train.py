@@ -447,6 +447,11 @@ def train(cfg: dict):
                 )
                 mx.eval(loss, grads)
 
+                # Skip update if loss is NaN
+                loss_val = loss.item()
+                if np.isnan(loss_val) or np.isinf(loss_val):
+                    continue
+
                 # Gradient clipping
                 grads = _clip_grad_norm(grads, cfg["max_grad_norm"])
 
@@ -454,7 +459,7 @@ def train(cfg: dict):
                 mx.eval(model.parameters(), optimizer.state)
 
                 n_updates += 1
-                total_loss += loss.item()
+                total_loss += loss_val
                 total_pg += pg_l.item()
                 total_vf += vf_l.item()
                 total_ent += ent_l.item()
@@ -549,12 +554,14 @@ def _ppo_loss(
 
     # Policy loss
     new_log_probs = compute_log_probs(logits, actions)
-    ratio = mx.exp(new_log_probs - old_log_probs)
+    # Clamp log ratio to prevent exp() overflow
+    log_ratio = mx.clip(new_log_probs - old_log_probs, -10.0, 10.0)
+    ratio = mx.exp(log_ratio)
     clipped_ratio = mx.clip(ratio, 1.0 - clip_eps, 1.0 + clip_eps)
     pg_loss = -mx.minimum(ratio * advantages, clipped_ratio * advantages).mean()
 
-    # Value loss
-    vf_loss = mx.mean((values - returns) ** 2)
+    # Value loss (clamp to prevent huge gradients)
+    vf_loss = mx.mean(mx.clip((values - returns) ** 2, 0.0, 100.0))
 
     # Entropy bonus
     entropy = compute_entropy(logits).mean()
@@ -568,20 +575,22 @@ def _ppo_loss(
 # ──────────────────────────────────────────────────────────────
 
 def _sample_action_np(logits: np.ndarray):
-    """Sample action from numpy logits (handles -inf masking)."""
-    valid = logits > -1e30
+    """Sample action from numpy logits (handles masked actions)."""
+    valid = logits > -1e8
     if not valid.any():
         return 0, 0.0
 
     max_logit = logits[valid].max()
-    shifted = np.where(valid, logits - max_logit, -1e30)
+    shifted = np.where(valid, logits - max_logit, -100.0)
     exp_shifted = np.where(valid, np.exp(shifted), 0.0)
     sum_exp = exp_shifted.sum()
+    if sum_exp == 0:
+        return 0, 0.0
     probs = exp_shifted / sum_exp
 
     action = np.random.choice(len(probs), p=probs)
-    log_prob = np.log(probs[action] + 1e-10)
-    return int(action), float(log_prob)
+    log_prob = np.log(max(probs[action], 1e-10))
+    return int(action), float(np.clip(log_prob, -20.0, 0.0))
 
 
 def _clip_grad_norm(grads, max_norm):
@@ -611,10 +620,12 @@ def evaluate_model(model, n_games: int = 1000) -> float:
             mx.eval(logits)
 
             logits_np = np.array(logits[0])
-            valid = logits_np > -1e30
+            valid = logits_np > -1e8
             if not valid.any():
                 break
-            action = int(np.argmax(logits_np))
+            # Greedy: pick highest logit among valid actions
+            masked = np.where(valid, logits_np, -1e9)
+            action = int(np.argmax(masked))
 
             obs, reward, done, truncated, info = env.step(action)
 
