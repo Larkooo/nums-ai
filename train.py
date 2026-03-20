@@ -462,6 +462,14 @@ def train(cfg: dict):
                 total_vf += vf_l.item()
                 total_ent += ent_l.item()
 
+                # Live loss updates during PPO
+                dash.cur_loss = total_loss / n_updates
+                dash.cur_pg_loss = total_pg / n_updates
+                dash.cur_vf_loss = total_vf / n_updates
+                dash.cur_entropy = total_ent / n_updates
+                dash.phase = f"update {epoch+1}/{cfg['n_epochs']}"
+                dash.render()
+
         # Update dashboard metrics
         if n_updates > 0:
             dash.cur_loss = total_loss / n_updates
