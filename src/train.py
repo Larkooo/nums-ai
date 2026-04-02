@@ -15,6 +15,8 @@ import time
 from collections import deque
 from pathlib import Path
 
+import math
+
 import mlx.core as mx
 import mlx.nn as nn
 import mlx.optimizers as optim
@@ -54,7 +56,7 @@ def _term_width():
 # ──────────────────────────────────────────────────────────────
 
 DEFAULTS = dict(
-    total_steps=5_000_000,
+    total_steps=10_000_000,  # 10M steps (was 5M) — more time to learn late-game
     rollout_steps=4096,      # longer rollouts = more data per update
     n_epochs=6,              # more passes over each batch
     batch_size=512,          # larger batches for stable gradients
@@ -63,15 +65,16 @@ DEFAULTS = dict(
     clip_eps=0.15,           # tighter clipping = more conservative updates
     vf_coef=0.25,            # lower vf coef — value loss was dominating
     ent_coef=0.05,           # 5x more entropy bonus — explore longer
-    lr=1e-4,                 # slower learning rate for stability
+    lr=3e-4,                 # slightly higher initial LR (cosine anneals to ~0)
+    lr_end=1e-5,             # final LR for cosine schedule
     max_grad_norm=0.5,       # gradient clipping
     hidden_size=512,         # bigger network
     n_envs=16,               # more parallel games for diverse experience
     eval_interval=100_000,   # evaluate every 100k steps
     eval_games=2000,         # more eval games for accurate comparison
     save_dir="models",
-    shaping_start=0.0,       # reward shaping disabled by default (richer obs only)
-    shaping_end=0.0,         # set shaping_start=0.4 to enable with annealing
+    shaping_start=0.3,       # reward shaping enabled — anchoring & power penalties
+    shaping_end=0.05,        # anneal to small residual
     shaping_anneal_frac=0.7, # anneal over first 70% of training
 )
 
@@ -395,8 +398,14 @@ def train(cfg: dict):
     rollout_num = 0
 
     while rollout_num * steps_per_rollout < cfg["total_steps"]:
-        # ── Anneal reward shaping ──
+        # ── Cosine LR annealing ──
         progress = min(rollout_num * steps_per_rollout / cfg["total_steps"], 1.0)
+        lr_start = cfg["lr"]
+        lr_end = cfg.get("lr_end", 1e-5)
+        cos_lr = lr_end + 0.5 * (lr_start - lr_end) * (1 + math.cos(math.pi * progress))
+        optimizer.learning_rate = cos_lr
+
+        # ── Anneal reward shaping ──
         anneal_frac = cfg.get("shaping_anneal_frac", 0.7)
         shaping_start = cfg.get("shaping_start", 0.4)
         shaping_end = cfg.get("shaping_end", 0.05)
@@ -716,6 +725,8 @@ def main():
     parser.add_argument("--n-envs", type=int, default=DEFAULTS["n_envs"])
     parser.add_argument("--batch-size", type=int, default=DEFAULTS["batch_size"])
     parser.add_argument("--rollout-steps", type=int, default=DEFAULTS["rollout_steps"])
+    parser.add_argument("--lr-end", type=float, default=DEFAULTS["lr_end"],
+                        help="Final learning rate for cosine annealing")
     parser.add_argument("--resume", type=str, default=None,
                         help="Resume training from a checkpoint (path or filename in save-dir)")
     parser.add_argument("--eval-only", action="store_true")
@@ -754,6 +765,7 @@ def main():
     cfg.update(
         total_steps=args.steps,
         lr=args.lr,
+        lr_end=args.lr_end,
         hidden_size=args.hidden,
         n_envs=args.n_envs,
         batch_size=args.batch_size,

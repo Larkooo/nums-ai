@@ -3,7 +3,7 @@ Faithful Python port of the NUMS on-chain game logic.
 
 Replicates the Cairo contract mechanics including:
 - 18 slots, numbers 1-999, strict ascending order
-- 5 traps (Bomb, Lucky, Magnet, UFO, Windy) with chain reactions
+- 5 visible traps (Bomb, Lucky, Magnet, UFO, Windy) with chain reactions
 - 7 powers (Reroll, High, Low, Swap, DoubleUp, Halve, Mirror)
 - Power draws at levels 4, 8, 12
 - Game-over detection with power rescue consideration
@@ -56,7 +56,7 @@ class NumsGame:
     level: int = 0
     over: bool = False
 
-    # Traps: list of TrapType for each slot (hidden from player)
+    # Traps: list of TrapType for each slot (visible to the player)
     traps: list[int] = field(default_factory=lambda: [0] * SLOT_COUNT)
     disabled_traps: set[int] = field(default_factory=set)
 
@@ -207,7 +207,7 @@ class NumsGame:
           [18]    - current number / 999
           [19]    - next number / 999
           [20]    - level / 18
-          [21:39] - 18 binary flags: is slot occupied?
+          [21:39] - 18 visible active trap types normalized to [0, 1]
           [39:46] - selectable power 0 one-hot (7 types)
           [46:53] - selectable power 1 one-hot (7 types)
           [53:60] - enabled power 0 one-hot (7 types, zeros if not enabled)
@@ -235,9 +235,13 @@ class NumsGame:
         obs[19] = self.next_number / SLOT_MAX
         obs[20] = self.level / SLOT_COUNT
 
-        # Slot occupancy flags
+        # Visible active trap types. Disabled traps are treated as empty.
         for i in range(SLOT_COUNT):
-            obs[21 + i] = 1.0 if self.slots[i] != 0 else 0.0
+            trap_type = self.traps[i]
+            if trap_type != TrapType.NONE and i not in self.disabled_traps:
+                obs[21 + i] = trap_type / TRAP_COUNT
+            else:
+                obs[21 + i] = 0.0
 
         # Selectable powers (one-hot per slot)
         for i, p in enumerate(self.selectable_powers[:2]):
@@ -294,6 +298,10 @@ class NumsGame:
         """Compute a 0-1 score of how good the current board state is.
 
         Higher = more future flexibility. Used for reward shaping.
+        Calibrated against krump's play patterns (avg 12.18):
+        - Elite games tolerate min gaps of 1-2 (relaxed from 50 threshold)
+        - Wide anchoring (low min, high max) is rewarded
+        - Flexibility weighted most heavily
         """
         valid_cur = len(self._valid_slots_for(self.number))
         valid_next = len(self._valid_slots_for(self.next_number))
@@ -305,15 +313,23 @@ class NumsGame:
         # How many slots can current/next number use (relative to empty slots)
         flexibility = (valid_cur + valid_next) / (2 * max(empty, 1))
 
-        # Min gap between adjacent filled numbers (tightness penalty)
+        # Min gap — relaxed threshold: elite players tolerate gaps as low as 1-2
+        # Use log scale so gaps of 5+ are fine, only 0 is truly bad
         filled = sorted(s for s in self.slots if s != 0)
         if len(filled) >= 2:
             min_gap = min(filled[i+1] - filled[i] for i in range(len(filled) - 1))
-            gap_score = min(min_gap / 50.0, 1.0)  # 50+ gap is healthy
+            gap_score = min(min_gap / 10.0, 1.0)  # 10+ gap is fine (was 50)
         else:
             gap_score = 1.0
 
-        return 0.6 * flexibility + 0.4 * gap_score
+        # Range coverage: reward establishing wide anchors early
+        # krump averages min=36, max=942 in elite games
+        if len(filled) >= 2:
+            range_coverage = (filled[-1] - filled[0]) / (SLOT_MAX - SLOT_MIN)
+        else:
+            range_coverage = 0.0
+
+        return 0.5 * flexibility + 0.25 * gap_score + 0.25 * range_coverage
 
     # ------------------------------------------------------------------
     # Internal: number generation

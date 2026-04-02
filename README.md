@@ -16,7 +16,7 @@ Pre-trained models are available in `models/`.
 ## The Game
 
 NUMS is a push-your-luck game: place randomly drawn numbers (1-999) into 18 ascending-order slots. Features:
-- **5 hidden traps** (Bomb, Lucky, Magnet, UFO, Windy) that fire on placement and chain-react
+- **5 visible traps** (Bomb, Lucky, Magnet, UFO, Windy) that fire on placement and chain-react
 - **7 powers** (Reroll, High, Low, Swap, DoubleUp, Halve, Mirror) drawn at levels 4, 8, 12
 - **Win condition**: fill all 18 slots in ascending order
 
@@ -60,6 +60,12 @@ python src/train.py --steps 10000000 --resume models/model_eval_10.32.npz
 python src/evaluate.py --model models/model_eval_10.32.npz --games 5000
 ```
 
+### Fetch real player games
+
+```bash
+python src/fetch_player_games.py --username krump --output data/player_games/krump.json
+```
+
 ### Watch the AI play
 
 ```bash
@@ -75,7 +81,7 @@ python src/demo.py
 
 ## Architecture
 
-**Observation** (83 features): 18 slot values, current/next number, level, 18 occupancy flags, one-hot power encodings, plus 9 derived features (valid slot counts for current and next number, min gap, board fill ratio, ideal position, stuck flag).
+**Observation** (83 features): 18 slot values, current/next number, level, 18 visible active trap features, one-hot power encodings, plus 9 derived features (valid slot counts for current and next number, min gap, board fill ratio, ideal position, stuck flag).
 
 **Actions** (23 discrete, masked): 18 slot placements + 2 power selections + 3 power applications. Invalid actions are masked out so the NN only chooses from legal moves.
 

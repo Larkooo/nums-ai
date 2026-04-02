@@ -101,6 +101,11 @@ def trap_name(t: int) -> str:
     return names.get(t, "")
 
 
+def trap_short(t: int) -> str:
+    names = {1: "BMB", 2: "LCK", 3: "MAG", 4: "UFO", 5: "WND"}
+    return names.get(t, "---")
+
+
 # ──────────────────────────────────────────────────────────────
 # Board rendering
 # ──────────────────────────────────────────────────────────────
@@ -123,10 +128,13 @@ def render_board(game: NumsGame, highlight_slot: int = -1, valid_slots: list[int
     # Slots - 2 rows of 9
     for row in range(2):
         slot_parts = []
+        trap_parts = []
         idx_parts = []
         for col in range(9):
             i = row * 9 + col
             val = game.slots[i]
+            trap = game.traps[i]
+            trap_active = trap != TrapType.NONE and i not in game.disabled_traps
             if i == highlight_slot:
                 if val != 0:
                     slot_parts.append(f"{BG_GREEN}{BOLD}{val:>3}{RESET}")
@@ -138,9 +146,14 @@ def render_board(game: NumsGame, highlight_slot: int = -1, valid_slots: list[int
                 slot_parts.append(f"{YELLOW}{DIM}{'···':>3}{RESET}")
             else:
                 slot_parts.append(f"{DIM}{'···':>3}{RESET}")
+            if trap_active:
+                trap_parts.append(f"{MAGENTA}{DIM}{trap_short(trap):>3}{RESET}")
+            else:
+                trap_parts.append(f"{DIM}{'---':>3}{RESET}")
             idx_parts.append(f"{DIM}{i:>3}{RESET}")
 
         lines.append(f"  {DIM}║{RESET} {'│'.join(slot_parts)} {DIM}║{RESET}")
+        lines.append(f"  {DIM}║{RESET} {'│'.join(trap_parts)} {DIM}║{RESET}")
         lines.append(f"  {DIM}║{RESET} {'│'.join(idx_parts)} {DIM}║{RESET}")
         if row == 0:
             lines.append(f"  {DIM}║{'─' * 58}║{RESET}")
@@ -159,6 +172,7 @@ def render_board(game: NumsGame, highlight_slot: int = -1, valid_slots: list[int
         powers_str = f"{DIM}none{RESET}"
 
     lines.append(f"  {DIM}║{RESET}  Powers: {powers_str}{'  ' * 2}{DIM}║{RESET}")
+    lines.append(f"  {DIM}║{RESET}  Trap key: {MAGENTA}{DIM}BMB{RESET}/{MAGENTA}{DIM}LCK{RESET}/{MAGENTA}{DIM}MAG{RESET}/{MAGENTA}{DIM}UFO{RESET}/{MAGENTA}{DIM}WND{RESET}{' ' * 11}{DIM}║{RESET}")
     lines.append(f"  {DIM}╚{'═' * 58}╝{RESET}")
 
     return lines

@@ -21,6 +21,7 @@ class NumsEnv(gym.Env):
         18-19: select power at index 0 or 1
         20-22: apply power at index 0, 1, or 2
 
+    Observation includes visible active trap information from the live game.
     Reward: +1 per level gained + shaped bonus (annealed over training).
     """
 
@@ -97,6 +98,20 @@ class NumsEnv(gym.Env):
         reward = level_reward + self.shaping_weight * shaped
 
         done = self.game.over
+
+        # ── End-of-game bonuses/penalties (from krump analysis) ──
+        if done:
+            # Unused power penalty: krump uses 100% of powers, never wastes one
+            unused_powers = len(self.game.enabled_powers)
+            reward -= self.shaping_weight * 0.3 * unused_powers
+
+            # Win bonus: completing all 18 slots is a major achievement
+            if self.game.is_completed():
+                reward += 3.0
+
+            # Near-win bonus: reaching 15+ is elite (krump hits 15+ in 27% of games)
+            elif self.game.level >= 15:
+                reward += 0.5
         obs = np.array(self.game.get_observation(), dtype=np.float32)
         mask = np.array(self.game.action_mask(), dtype=np.bool_)
 
