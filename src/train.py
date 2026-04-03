@@ -378,17 +378,32 @@ def train(cfg: dict):
     dash = Dashboard(cfg)
     dash.print_header()
 
-    # Find previous best eval score from existing checkpoint filenames
-    # Format: model_eval_{score}.npz (e.g., model_eval_10.03.npz)
+    # Find previous best eval score from existing checkpoints with matching obs size.
+    # Only compare against models with the same input dimension to avoid stale
+    # comparisons when the observation space changes (e.g. 83 → 122 features).
     prev_best = 0.0
+    current_obs_size = cfg["hidden_size"]  # placeholder, check actual weights
+    try:
+        # Determine obs size from current model's first layer
+        import mlx.core as _mx
+        current_obs_size = model.shared.layers[0].weight.shape[1]
+    except Exception:
+        current_obs_size = OBS_SIZE
+
     for f in save_dir.glob("model_eval_*.npz"):
         try:
+            # Check if this checkpoint has matching input dimension
+            data = np.load(str(f))
+            if "shared.layers.0.weight" in data:
+                in_dim = data["shared.layers.0.weight"].shape[1]
+                if in_dim != current_obs_size:
+                    continue  # skip models with different obs size
             score = float(f.stem.replace("model_eval_", ""))
             prev_best = max(prev_best, score)
-        except ValueError:
+        except (ValueError, Exception):
             pass
     if prev_best > 0:
-        print(f"  {DIM}Previous best: {prev_best:.2f}{RESET}")
+        print(f"  {DIM}Previous best: {prev_best:.2f} (obs={current_obs_size}){RESET}")
 
     # Tracking
     log_data = []
