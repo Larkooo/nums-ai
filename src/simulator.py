@@ -202,29 +202,39 @@ class NumsGame:
     def get_observation(self) -> list[float]:
         """Return observation vector.
 
-        Layout (83 features):
-          [0:18]  - 18 slots normalized to [0, 1] (0 = empty)
-          [18]    - current number / 999
-          [19]    - next number / 999
-          [20]    - level / 18
-          [21:39] - 18 visible active trap types normalized to [0, 1]
-          [39:46] - selectable power 0 one-hot (7 types)
-          [46:53] - selectable power 1 one-hot (7 types)
-          [53:60] - enabled power 0 one-hot (7 types, zeros if not enabled)
-          [60:67] - enabled power 1 one-hot
-          [67:74] - enabled power 2 one-hot
+        Layout (122 features):
+          [0:18]    - 18 slots normalized to [0, 1] (0 = empty)
+          [18]      - current number / 999
+          [19]      - next number / 999
+          [20]      - level / 18
+          [21:39]   - 18 visible active trap types normalized to [0, 1]
+          [39:46]   - selectable power 0 one-hot (7 types)
+          [46:53]   - selectable power 1 one-hot (7 types)
+          [53:60]   - enabled power 0 one-hot (7 types, zeros if not enabled)
+          [60:67]   - enabled power 1 one-hot
+          [67:74]   - enabled power 2 one-hot
           --- derived features ---
-          [74]    - valid slots for current number / 18
-          [75]    - valid slots for next number / 18
-          [76]    - min gap between adjacent filled numbers / 999 (board tightness)
-          [77]    - fraction of board filled
-          [78]    - number of enabled powers / 3
-          [79]    - ideal slot position for current number / 17 (proportional)
-          [80]    - is current number stuck? (0 or 1)
-          [81]    - empty slots below current number / 18
-          [82]    - empty slots above current number / 18
+          [74]      - valid slots for current number / 18
+          [75]      - valid slots for next number / 18
+          [76]      - min gap between adjacent filled numbers / 999 (board tightness)
+          [77]      - fraction of board filled
+          [78]      - number of enabled powers / 3
+          [79]      - ideal slot position for current number / 17 (proportional)
+          [80]      - is current number stuck? (0 or 1)
+          [81]      - empty slots below ideal position / 18
+          [82]      - empty slots above ideal position / 18
+          --- per-slot lookahead (next-number flexibility after placing here) ---
+          [83:101]  - for each slot: valid_slots_for_next_if_placed_here / 18
+                      (0 if slot is not a valid placement for current number)
+          --- per-slot available range (value capacity of each empty slot) ---
+          [101:119] - for each empty slot: (upper_bound - lower_bound) / 999
+                      (0 for filled slots)
+          --- phase one-hot ---
+          [119]     - 1 if select phase
+          [120]     - 1 if place phase
+          [121]     - 1 if apply phase
         """
-        obs = [0.0] * 83
+        obs = [0.0] * 122
 
         # Slots (normalized)
         for i in range(SLOT_COUNT):
@@ -282,15 +292,57 @@ class NumsGame:
         # Is stuck?
         obs[80] = 0.0 if valid_cur else 1.0
 
-        # Empty slots in valid range below/above current number
-        empty_below = sum(1 for i in range(SLOT_COUNT) if self.slots[i] == 0 and i in valid_cur and self.number > 0)
-        empty_above = sum(1 for i in range(SLOT_COUNT) if self.slots[i] == 0 and i in valid_cur)
-        # More useful: slots below vs above the ideal position
+        # Empty slots below vs above the ideal position
         ideal_pos = (self.number - SLOT_MIN) / (SLOT_MAX - SLOT_MIN) * (SLOT_COUNT - 1)
         below = sum(1 for s in valid_cur if s < ideal_pos)
         above = sum(1 for s in valid_cur if s >= ideal_pos)
-        obs[81] = below / max(SLOT_COUNT, 1)
-        obs[82] = above / max(SLOT_COUNT, 1)
+        obs[81] = below / SLOT_COUNT
+        obs[82] = above / SLOT_COUNT
+
+        # ── Per-slot lookahead: next-number flexibility after placing here ──
+        # For each valid placement of current number, temporarily place it and
+        # count how many slots next_number would have. This gives the model the
+        # 1-step tactical lookahead that every human player does naturally.
+        valid_cur_set = set(valid_cur)
+        for i in range(SLOT_COUNT):
+            if i in valid_cur_set:
+                self.slots[i] = self.number
+                next_count = len(self._valid_slots_for(self.next_number))
+                self.slots[i] = 0
+                obs[83 + i] = next_count / SLOT_COUNT
+            # else: already 0.0
+
+        # ── Per-slot available range: value capacity of each empty slot ──
+        # For each empty slot, how wide is the value range that could fit?
+        # This tells the model where the board is tight vs spacious.
+        for i in range(SLOT_COUNT):
+            if self.slots[i] != 0:
+                continue  # filled slot, leave as 0.0
+
+            # Find lower bound (nearest filled value to the left, or 0)
+            lower = 0
+            for j in range(i - 1, -1, -1):
+                if self.slots[j] != 0:
+                    lower = self.slots[j]
+                    break
+
+            # Find upper bound (nearest filled value to the right, or SLOT_MAX+1)
+            upper = SLOT_MAX + 1
+            for j in range(i + 1, SLOT_COUNT):
+                if self.slots[j] != 0:
+                    upper = self.slots[j]
+                    break
+
+            obs[101 + i] = (upper - lower) / SLOT_MAX
+
+        # ── Phase one-hot ──
+        phase = self.get_phase()
+        if phase == "select":
+            obs[119] = 1.0
+        elif phase == "place":
+            obs[120] = 1.0
+        elif phase == "apply":
+            obs[121] = 1.0
 
         return obs
 

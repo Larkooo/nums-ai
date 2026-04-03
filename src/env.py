@@ -10,7 +10,7 @@ from simulator import NumsGame, SLOT_COUNT, SLOT_MAX, POWER_COUNT
 
 
 NUM_ACTIONS = 23  # 18 slots + 2 select + 3 apply
-OBS_SIZE = 83     # 74 base + 9 derived features
+OBS_SIZE = 122    # 74 base + 9 derived + 18 lookahead + 18 range + 3 phase
 
 
 class NumsEnv(gym.Env):
@@ -80,13 +80,14 @@ class NumsEnv(gym.Env):
         self._prev_quality = new_quality
 
         # Bonus for keeping next_number placeable after a placement
+        # Proportional signal: the model gets gradient to maximize flexibility,
+        # not just avoid the worst case.
         next_bonus = 0.0
         if level_reward > 0 and not self.game.over:
             next_valid = len(self.game._valid_slots_for(self.game.next_number))
-            if next_valid == 0:
-                next_bonus = -0.15  # placed but blocked next number
-            elif next_valid >= 3:
-                next_bonus = 0.05   # good flexibility
+            # 0 valid → -0.20, 1 → -0.15, 2 → -0.10, 3 → -0.05,
+            # 4 → 0.00, 5 → +0.05, 6+ → +0.10
+            next_bonus = -0.2 + min(next_valid, 6) * 0.05
 
         # Penalty for needing to use a power (got stuck)
         power_penalty = 0.0
